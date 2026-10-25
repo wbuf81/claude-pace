@@ -8,16 +8,42 @@ If you are searching for a Claude Code statusline, a Claude Code quota monitor, 
 
 ## This Fork
 
-[wbuf81/claude-pace](https://github.com/wbuf81/claude-pace) adds three things on top of upstream v0.9.5:
+[wbuf81/claude-pace](https://github.com/wbuf81/claude-pace) is a fork of [Astro-Han/claude-pace](https://github.com/Astro-Han/claude-pace) v0.9.5 that adds three things: an org label, pace bars, and a working ripple.
 
 ```
 Opus 5.5 (1M) xhigh |  claudepace (main) · Acme
 ██░░░░░░░░ 23% 1M   |  5h ▆▅▆▇┃░░░░░ 41% 3h  7d ▆░░░┃░░░░░ 18% 4d
 ```
 
-- **Org label.** The top line ends with the org you're logged into, read from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`). Team and Enterprise logins show the org name, minus an optional shared prefix set in `CLAUDE_PACE_ORG_STRIP` (e.g. `Acme Corp` turns "Acme Corp Platform" into `Platform`), falling back to `Team`/`Enterprise` when nothing is left. Personal plans show `Pro`/`Max`. API-key logins show nothing.
-- **Pace bars.** 5h and 7d usage are 10-cell bars. The fill is what you've used; `┃` marks where you'd be at an even pace through the window. Red fill means you're ahead of the mark (burning too fast), green means at or behind it. These replace the `⇡`/`⇣` arrows.
-- **Working ripple.** While Claude is working, a shallow dip in height (`█▇▆▅▆▇`) rolls along the fill of each bar, one cell per second. A bar with nothing to ripple (empty fill) gets a `▒` glint sweeping its track instead. Plugin hooks (`hooks/hooks.json`) keep a per-session busy flag; Esc fires no hook, so the statusline also checks the transcript for the interrupt notice. Needs the plugin install (for the hooks) and `"refreshInterval": 1` on `statusLine`, which `/claude-pace:setup` adds.
+### Org label
+
+The top line ends with the org you're logged into (`· Acme` above), so hopping between Team and Enterprise logins stays visible. It's read from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) and cached for 10 seconds.
+
+| Login | Shows |
+|---|---|
+| Team / Enterprise | Org name minus `CLAUDE_PACE_ORG_STRIP`, or `Team` / `Enterprise` if nothing is left |
+| Pro / Max | `Pro` / `Max` |
+| API key | Nothing |
+
+To trim a prefix every org name shares, set `CLAUDE_PACE_ORG_STRIP` in the `env` block of `~/.claude/settings.json`: with `"CLAUDE_PACE_ORG_STRIP": "Acme Corp"`, "Acme Corp Platform" shows as `Platform`. It's unset by default, so the full name shows. Names over 24 characters are truncated, and control characters are stripped since org names are admin-controlled text.
+
+### Pace bars
+
+5h and 7d usage are 10-cell bars instead of upstream's `⇡`/`⇣` arrows. The fill is how much you've used; `┃` marks where you'd be at an even pace through the window.
+
+- `██░░┃░░░░░` green: the fill is at or behind the mark. Headroom.
+- `█████┃██░░` red: the fill is past the mark. You're burning faster than the window allows.
+
+When Claude Code sends no reset time there's no mark, and the fill colors by usage alone: green, yellow from 70%, red from 90%.
+
+### Working ripple
+
+While Claude is working, a shallow dip in height (`█▇▆▅▆▇`) rolls along each bar's fill, one cell per second. It stops when Claude finishes or you press Esc. A bar with no fill to ripple gets a `▒` glint sweeping its track instead, so there's always something moving.
+
+It needs two things:
+
+- **The plugin install.** Plugin hooks (`hooks/hooks.json`) keep a per-session busy flag: busy on each prompt and tool call, idle on stop, failure, and session start or end. Subagent events are ignored so a background agent can't flip it. Esc fires no hook, so the statusline also checks the end of the transcript for the interrupt notice. The npx and manual installs have no hooks, so their bars stay still.
+- **`"refreshInterval": 1` on `statusLine`.** This redraws the statusline every second so the ripple animates. `/claude-pace:setup` adds it.
 
 ## TL;DR
 
@@ -129,7 +155,7 @@ Release notifications: Watch this repo → Custom → Releases.
 |---|---|---|---|---|
 | Runtime | `jq` | Node.js 18+ / npm | Compiled (Rust) | Node.js / npm |
 | Codebase | Single Bash file | 1000+ lines + node_modules | Compiled binary | 1000+ lines + node_modules |
-| Rate limit tracking | 5h + 7d usage %, pace delta, reset countdown | Usage % | Usage % (planned) | None (formatting only) |
+| Rate limit tracking | 5h + 7d usage %, pace bars, reset countdown | Usage % | Usage % (planned) | None (formatting only) |
 | Execution | ~10ms | ~90ms | ~5ms | ~90ms |
 | Memory | ~2 MB | ~57 MB | ~3 MB | ~57 MB |
 
@@ -139,17 +165,19 @@ Need themes, powerline aesthetics, or TUI config? Try [ccstatusline](https://git
 
 ## How Claude Pace Tracks Quota
 
-Claude Code polls the statusline every ~300ms:
+Claude Code reruns the statusline as the conversation updates (at most every ~300ms), and every second with `refreshInterval: 1`:
 
 | Data | Source | Cache |
 |------|--------|-------|
 | Model, context, cost | stdin JSON (single `jq` call) | None needed |
 | Quota (5h, 7d, pace) | stdin `rate_limits` (live, no fallback) | None |
 | Git branch + diff | `git` commands | Private cache dir, 5s TTL |
+| Org label | `oauthAccount` in `~/.claude.json` | Private cache dir, 10s TTL |
+| Working state | Busy flag from the plugin hooks, plus the transcript tail for Esc | One flag file per session |
 
 Requires Claude Code `2.1.80+`, where `rate_limits` is available in statusline stdin. When stdin omits `rate_limits` (older Claude Code, or providers that do not surface the field), claude-pace shows `--` for 5h/7d quota and the session cost if available. No cached or stale quota is ever shown, because a cached account-level snapshot cannot be proven to belong to the current provider/account.
 
-Git cache files live in a private per-user directory (`$XDG_RUNTIME_DIR/claude-pace` or `~/.cache/claude-pace`, mode 700). All cache reads are validated before use. No files are ever written to shared `/tmp`.
+Git and org cache files and the busy flags live in a private per-user directory (`$XDG_RUNTIME_DIR/claude-pace` or `~/.cache/claude-pace`, mode 700). All cache reads are validated before use. No files are ever written to shared `/tmp`.
 
 ## Claude Code Statusline FAQ
 
@@ -161,6 +189,12 @@ claude-pace compares your current usage percentage to the fraction of time elaps
 
 **Does it make network calls?**
 No. Quota data comes from stdin `rate_limits` on Claude Code `2.1.80+`. If `rate_limits` is absent (older Claude Code, or providers that omit it), claude-pace shows `--` for 5h/7d and the local session cost when present. No stale quota fallback — see [the removal decision](docs/decisions/2026-05-20-quota-cache-removal.md).
+
+**Why aren't the bars rippling while Claude works?**
+The ripple needs this fork's plugin install (for the hooks) and `"refreshInterval": 1` under `statusLine` in `~/.claude/settings.json`. Run `/claude-pace:setup` to add the setting. The npx and manual installs fetch upstream releases, which don't have the ripple.
+
+**Where does the org name come from?**
+From `oauthAccount` in `~/.claude.json`, which Claude Code writes when you log in. Nothing is fetched over the network. Use `CLAUDE_PACE_ORG_STRIP` to trim a shared prefix (see [Org label](#org-label)).
 
 **Can I inspect the source?**
 The entire tool is [one Bash file](claude-pace.sh). Read it before you install it.
