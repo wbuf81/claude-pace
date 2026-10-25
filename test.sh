@@ -99,6 +99,11 @@ NOW=$(date +%s)
 # Auto-compact tracking keys off this env var; clear it so the host shell's
 # value can't leak into the baseline tests (Test 29 sets it explicitly).
 unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# The org label reads the logged-in account from $CLAUDE_CONFIG_DIR/.claude.json.
+# Point it at an empty dir so the host account can't leak into baseline tests
+# (Test 32 provides account files explicitly).
+export CLAUDE_CONFIG_DIR="$TEST_TMP/no-account"
+unset CLAUDE_PACE_ORG_STRIP
 REPO_NAME=$(basename "$PWD")
 CURRENT_BRANCH=$(git branch --show-current)
 run() { echo "$1" | bash claude-pace.sh 2>/dev/null | strip_ansi; }
@@ -170,8 +175,8 @@ assert_aligned "| aligned between lines"
 # ── Test 6: Line 2 format - single pipe, no colons, no parens on countdown ──
 echo "Test 6: line 2 format"
 assert_line "single pipe on L2" 2 '^[^|]+\|[^|]*$'
-assert_line "no colon after 5h" 2 '5h [0-9]'
-assert_line "no colon after 7d" 2 '7d [0-9]'
+assert_line "no colon after 5h" 2 '5h [^ :]+ [0-9]+%'
+assert_line "no colon after 7d" 2 '7d [^ :]+ [0-9]+%'
 assert_line "no parens on countdown" 2 '[0-9]+[dhm][^)]'
 assert_line "no 'of' before context size" 2 '^[^ ]+ [0-9]+% [0-9]+[MK] '
 
@@ -195,19 +200,38 @@ echo "Test 10: long model truncation"
 OUTPUT=$(run '{"model":{"display_name":"claude-3-opus-20240229-extended"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":25,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":20,"resets_at":'$((NOW + 14000))'},"seven_day":{"used_percentage":10,"resets_at":'$((NOW + 500000))'}}}')
 assert_aligned "| aligned for long model"
 
-# ── Test 11: Pace delta arrows (small values must show after threshold removal) ──
-echo "Test 11: pace delta"
-# 5h window=300min, resets_at=NOW+150min → expected=50%.
-# used=51 → d=+1 (⇡1%, minimum positive boundary)
-OUTPUT=$(run '{"model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":51,"resets_at":'$((NOW + 9000))'},"seven_day":{"used_percentage":50,"resets_at":'$((NOW + 302400))'}}}')
-assert_line "⇡1% shown for min overspend" 2 '5h 51% ⇡1%'
-# used=49 → d=-1 (⇣1%, minimum negative boundary)
-OUTPUT=$(run '{"model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":49,"resets_at":'$((NOW + 9000))'},"seven_day":{"used_percentage":50,"resets_at":'$((NOW + 302400))'}}}')
-assert_line "⇣1% shown for min surplus" 2 '5h 49% ⇣1%'
-# used=50 → d=0 (no arrow on 5h). 7d also d=0 so no arrow anywhere.
-# 7d window=10080min, resets_at=NOW+302400s=5040min → expected=(10080-5040)*100/10080=50
-OUTPUT=$(run '{"model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":50,"resets_at":'$((NOW + 9000))'},"seven_day":{"used_percentage":50,"resets_at":'$((NOW + 302400))'}}}')
-assert_line "no arrow at d=0" 2 '5h 50% [0-9]'
+# ── Test 11: Pace bars (fill = used, ┃ = where usage "should" be by now) ──
+echo "Test 11: pace bars"
+# 5h window=300min, resets_at=NOW+180min → expected=40% → marker in cell 4.
+# 7d window=10080min, resets_at=NOW+4d=5760min → expected=42% → marker in cell 4.
+# The +30s keeps the minute math stable if the clock ticks between test and script.
+OUTPUT=$(run '{"model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":41,"resets_at":'$((NOW + 10830))'},"seven_day":{"used_percentage":18,"resets_at":'$((NOW + 345630))'}}}')
+assert_line "5h bar fills 4 cells with marker at cell 4" 2 '5h ████┃░░░░░ 41% 3h'
+assert_line "7d bar fills 1 cell with marker at cell 4" 2 '7d █░░░┃░░░░░ 18% 4d'
+assert_line_not "pace arrows replaced by bars" 2 '[⇡⇣]'
+# Over pace: used=80 vs expected=50 → marker sits inside the fill.
+OUTPUT=$(run '{"model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":80,"resets_at":'$((NOW + 9030))'},"seven_day":{"used_percentage":50,"resets_at":'$((NOW + 302430))'}}}')
+assert_line "over-pace marker overlays the fill" 2 '5h █████┃██░░ 80%'
+# Fill colour follows pace, not absolute usage: red when over, green when under.
+RAW=$(echo '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":80,"resets_at":'$((NOW + 9030))'},"seven_day":{"used_percentage":20,"resets_at":'$((NOW + 302430))'}}}' | bash claude-pace.sh 2>/dev/null | sed -n 2p)
+SEG5=${RAW#*5h }
+SEG5=${SEG5%%7d*}
+SEG7=${RAW#*7d }
+if [[ "$SEG5" == *$'\033[31m█'* && "$SEG5" != *$'\033[32m█'* && "$SEG7" == *$'\033[32m█'* && "$SEG7" != *$'\033[31m█'* ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: fill is red over pace and green under pace"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: fill is red over pace and green under pace"
+  echo "    actual: $(printf '%q' "$RAW")"
+fi
+# Window just reset (resets_at = now) → expected=100%, marker clamps to the last cell.
+OUTPUT=$(run '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":'"$NOW"'},"seven_day":{"used_percentage":0,"resets_at":'$((NOW + 604830))'}}}')
+assert_line "full window clamps marker to last cell" 2 '5h █████████┃ 100%'
+assert_line "empty 7d bar keeps marker at cell 0" 2 '7d ┃░░░░░░░░░ 0%'
+# Missing resets_at → no pace reference, so the bar has no marker.
+OUTPUT=$(run '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":41},"seven_day":{"used_percentage":18}}}')
+assert_line "no marker without resets_at" 2 '5h ████░░░░░░ 41%'
 
 # ── Test 12: Branch cache must not inject newlines into output ──
 echo "Test 12: branch cache newline injection"
@@ -401,7 +425,7 @@ PARTIAL_RUNTIME="$TEST_TMP/partial-runtime"
 mkdir -p "$PARTIAL_HOME" "$PARTIAL_RUNTIME"
 OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{"seven_day":{"used_percentage":18,"resets_at":'"$((NOW + 400000))"'}}}')
 assert_line "partial live missing five_hour renders 5h --" 2 '5h --'
-assert_line "partial live keeps live seven_day" 2 '7d 18%'
+assert_line "partial live keeps live seven_day" 2 '7d [^ ]+ 18%'
 assert_line_not "live rate_limits suppresses session cost" 2 '\$1\.23'
 
 # ── Test 25: Effort level words for all five levels ──
@@ -578,6 +602,155 @@ OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app' '{model:{display_name:"O
 assert_line "windows path shows project name" 1 '\| +my-app$'
 OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app\.claude\worktrees\fix-auth' '{model:{display_name:"Opus"},workspace:{project_dir:$d}}' | bash claude-pace.sh 2>/dev/null | strip_ansi)
 assert_line "windows worktree shows repo/worktree" 1 '\| +my-app/fix-auth$'
+
+# ── Test 32: Org label from the logged-in account ──
+# Each case gets its own config dir so the label cache (keyed by account file
+# path) can't carry one case's answer into the next.
+echo "Test 32: org label"
+ORG_HOME="$TEST_TMP/org-home"
+ORG_RUNTIME="$TEST_TMP/org-runtime"
+mkdir -p "$ORG_HOME" "$ORG_RUNTIME"
+ORG_INPUT='{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"/tmp/my-app"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
+org_case() {
+  local name="$1" account_json="$2" dir="$TEST_TMP/org-cfg-$1"
+  mkdir -p "$dir"
+  [[ -n "$account_json" ]] && printf '%s\n' "$account_json" >"$dir/.claude.json"
+  OUTPUT=$(CLAUDE_CONFIG_DIR="$dir" run_with_env "$ORG_HOME" "$ORG_RUNTIME" "$ORG_INPUT")
+}
+org_case team '{"oauthAccount":{"organizationName":"Acme Platform","organizationType":"claude_team"}}'
+assert_line "team org shows the org name" 1 '\| +my-app · Acme Platform$'
+RAW=$(CLAUDE_CONFIG_DIR="$TEST_TMP/org-cfg-team" invoke_with_env "$ORG_HOME" "$ORG_RUNTIME" "$ORG_INPUT" | sed -n 1p)
+if [[ "$RAW" == *$'\033[36mAcme Platform\033[0m'* ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: org name uses the model's cyan"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: org name uses the model's cyan"
+  echo "    actual: $(printf '%q' "$RAW")"
+fi
+assert_aligned "| aligned with org label"
+org_case enterprise '{"oauthAccount":{"organizationName":"Acme","organizationType":"claude_enterprise"}}'
+OUTPUT=$(CLAUDE_CONFIG_DIR="$TEST_TMP/org-cfg-enterprise" CLAUDE_PACE_ORG_STRIP="Acme" run_with_env "$ORG_HOME" "$TEST_TMP/org-runtime-enterprise" "$ORG_INPUT")
+assert_line "bare prefix falls back to plan type" 1 '\| +my-app · Enterprise$'
+org_case max '{"oauthAccount":{"organizationName":"someone@example.com'"'"'s Organization","organizationType":"claude_max"}}'
+assert_line "personal plan shows plan type, not email org" 1 '\| +my-app · Max$'
+org_case apikey '{"primaryApiKey":"sk-test"}'
+assert_line "no oauth account shows no label" 1 '\| +my-app$'
+org_case missing ''
+assert_line "missing account file shows no label" 1 '\| +my-app$'
+org_case broken '{"oauthAccount":'
+assert_line "malformed account file shows no label" 1 '\| +my-app$'
+assert_line_count "malformed account file keeps two lines" 2
+org_case custom '{"oauthAccount":{"organizationName":"Acme Rockets","organizationType":"claude_team"}}'
+OUTPUT=$(CLAUDE_CONFIG_DIR="$TEST_TMP/org-cfg-custom" CLAUDE_PACE_ORG_STRIP="Acme" run_with_env "$ORG_HOME" "$TEST_TMP/org-runtime-custom" "$ORG_INPUT")
+assert_line "CLAUDE_PACE_ORG_STRIP trims a shared prefix" 1 '\| +my-app · Rockets$'
+org_case nostrip '{"oauthAccount":{"organizationName":"Acme Platform","organizationType":"claude_team"}}'
+OUTPUT=$(CLAUDE_CONFIG_DIR="$TEST_TMP/org-cfg-nostrip" CLAUDE_PACE_ORG_STRIP="" run_with_env "$ORG_HOME" "$TEST_TMP/org-runtime-nostrip" "$ORG_INPUT")
+assert_line "empty CLAUDE_PACE_ORG_STRIP keeps the full name" 1 '\| +my-app · Acme Platform$'
+org_case long '{"oauthAccount":{"organizationName":"Interstellar Logistics Division","organizationType":"claude_team"}}'
+assert_line "long org names truncate at 24 chars" 1 '\| +my-app · Interstellar Logistics D…$'
+# Org names are admin-controlled text: control bytes must never reach the terminal.
+mkdir -p "$TEST_TMP/org-cfg-escape"
+jq -n '{oauthAccount:{organizationName:"Evil\u001b]0;pwned\u0007Org",organizationType:"claude_team"}}' >"$TEST_TMP/org-cfg-escape/.claude.json"
+RAW=$(CLAUDE_CONFIG_DIR="$TEST_TMP/org-cfg-escape" invoke_with_env "$ORG_HOME" "$ORG_RUNTIME" "$ORG_INPUT" | sed -n 1p)
+# The ESC and BEL bytes go; the now-inert printable remainder may stay.
+if [[ "$RAW" != *$'\a'* && "$RAW" != *$'\033]'* && "$RAW" == *'Evil]0;pwnedOrg'* ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: control bytes stripped from org name"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: control bytes stripped from org name"
+  echo "    actual: $(printf '%q' "$RAW")"
+fi
+
+# ── Test 33: Shimmer while Claude is working ──
+# A frozen clock makes the shimmer cell deterministic: it sweeps the filled
+# cells (NOW % fill) or, under 2 filled cells, the whole bar (NOW % 10).
+echo "Test 33: working shimmer"
+FIXED_NOW=2000000002
+CLOCK_BIN="$TEST_TMP/fixed-clock-bin"
+mkdir -p "$CLOCK_BIN"
+cat >"$CLOCK_BIN/date" <<STUB
+#!/bin/sh
+[ "\$1" = "+%s" ] && { echo $FIXED_NOW; exit 0; }
+exec /bin/date "\$@"
+STUB
+chmod +x "$CLOCK_BIN/date"
+SHIM_HOME="$TEST_TMP/shim-home"
+SHIM_RUNTIME="$TEST_TMP/shim-runtime"
+SHIM_FLAG="$SHIM_RUNTIME/claude-pace/claude-busy-sess-1"
+SHIM_TRANSCRIPT="$TEST_TMP/shim-transcript.jsonl"
+mkdir -p "$SHIM_HOME" "$SHIM_RUNTIME/claude-pace"
+chmod 700 "$SHIM_RUNTIME/claude-pace"
+# 5h: used 41 → 4 filled, marker at 4 → shimmer at NOW%4=2.
+# 7d: used 18 → 1 filled (<2) → shimmer sweeps whole bar at NOW%10=2 (a track cell).
+SHIM_INPUT='{"session_id":"sess-1","transcript_path":"'"$SHIM_TRANSCRIPT"'","model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"/tmp/my-app"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":41,"resets_at":'"$((FIXED_NOW + 10830))"'},"seven_day":{"used_percentage":18,"resets_at":'"$((FIXED_NOW + 345630))"'}}}'
+run_fixed_clock() {
+  env HOME="$SHIM_HOME" XDG_RUNTIME_DIR="$SHIM_RUNTIME" USER=tester PATH="$CLOCK_BIN:$PATH" \
+    bash claude-pace.sh 2>/dev/null <<<"$1" | strip_ansi
+}
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"build it"}}' >"$SHIM_TRANSCRIPT"
+rm -f "$SHIM_FLAG"
+OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
+assert_line "idle session has no shimmer" 2 '5h ████┃░░░░░ 41%.*7d █░░░┃░░░░░ 18%'
+printf '%s\n' "$FIXED_NOW" >"$SHIM_FLAG"
+OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
+assert_line "busy shimmer glints inside the fill" 2 '5h ██▓█┃░░░░░ 41%'
+assert_line "busy shimmer sweeps whole bar when fill is tiny" 2 '7d █░▒░┃░░░░░ 18%'
+# Esc fires no hook, so the transcript is the only interrupt signal.
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}' '{"type":"queue-operation","operation":"enqueue"}' >>"$SHIM_TRANSCRIPT"
+OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
+assert_line "interrupt in transcript stops the shimmer" 2 '5h ████┃░░░░░ 41%'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"try again"}}' >>"$SHIM_TRANSCRIPT"
+OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
+assert_line "new prompt after interrupt resumes the shimmer" 2 '5h ██▓█┃░░░░░ 41%'
+OUTPUT=$(run_fixed_clock "${SHIM_INPUT/sess-1/sess-2}")
+assert_line "busy flag is per session" 2 '5h ████┃░░░░░ 41%'
+assert_aligned "| aligned while shimmering"
+
+# ── Test 34: Hook mode maintains the busy flag ──
+echo "Test 34: hook mode"
+HOOK_HOME="$TEST_TMP/hook-home"
+HOOK_RUNTIME="$TEST_TMP/hook-runtime"
+HOOK_ROOT="$HOOK_RUNTIME/claude-pace"
+mkdir -p "$HOOK_HOME" "$HOOK_RUNTIME"
+run_hook() {
+  env HOME="$HOOK_HOME" XDG_RUNTIME_DIR="$HOOK_RUNTIME" USER=tester PATH="$PATH" \
+    bash claude-pace.sh --hook "$1" 2>&1 <<<"$2"
+}
+HOOK_OUT=$(run_hook busy '{"session_id":"abc-123","hook_event_name":"UserPromptSubmit","prompt":"hi"}')
+if [[ -f "$HOOK_ROOT/claude-busy-abc-123" && -z "$HOOK_OUT" ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: busy hook writes the flag silently"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: busy hook writes the flag silently"
+  echo "    output: $HOOK_OUT"
+fi
+HOOK_OUT=$(run_hook idle '{"session_id":"abc-123","hook_event_name":"Stop"}')
+assert_missing_path "idle hook clears the flag" "$HOOK_ROOT/claude-busy-abc-123"
+run_hook busy '{"session_id":"abc-123","agent_id":"sub-1","hook_event_name":"PreToolUse"}' >/dev/null
+assert_missing_path "subagent events don't mark the session busy" "$HOOK_ROOT/claude-busy-abc-123"
+run_hook busy '{"session_id":"../../escape","hook_event_name":"UserPromptSubmit"}' >/dev/null
+assert_missing_path "session ids with path characters are rejected" "$HOOK_RUNTIME/escape"
+assert_missing_path "no flag written for rejected session id" "$HOOK_ROOT/claude-busy-../../escape"
+# PATH with the basics but no jq: the statusline would print "[needs jq]" here,
+# and hook stdout can land in Claude's context.
+NOJQ_BIN="$TEST_TMP/nojq-bin"
+mkdir -p "$NOJQ_BIN"
+for _cmd in cat date mkdir rm; do ln -sf "$(command -v "$_cmd")" "$NOJQ_BIN/$_cmd"; done
+HOOK_OUT=$(env HOME="$HOOK_HOME" XDG_RUNTIME_DIR="$HOOK_RUNTIME" USER=tester PATH="$NOJQ_BIN" \
+  /bin/bash claude-pace.sh --hook busy 2>&1 <<<'{"session_id":"nojq"}')
+HOOK_OUT+=$(env HOME="$HOOK_HOME" XDG_RUNTIME_DIR="$HOOK_RUNTIME" USER=tester PATH="$NOJQ_BIN" \
+  /bin/bash claude-pace.sh --hook idle 2>&1 </dev/null)
+if [[ -z "$HOOK_OUT" ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: hook mode prints nothing even without jq"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: hook mode prints nothing even without jq"
+  echo "    output: $HOOK_OUT"
+fi
 
 # ── Summary ──
 echo ""

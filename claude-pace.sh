@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Claude Code statusline plugin
-# Line1: model (ctx) effort | project (branch) Nf +A -D
-# Line2: bar PCT% CL | 5h used% [⇡⇣pace] countdown  7d used% [⇡⇣pace] countdown
+# Line1: model (ctx) effort | project (branch) Nf +A -D · org
+# Line2: bar PCT% CL | 5h pace-bar used% countdown  7d pace-bar used% countdown
+# Hook mode: claude-pace.sh --hook busy|idle (plugin hooks; drives the shimmer)
 
 # Disable glob expansion so unquoted vars with wildcards (e.g. DIR paths)
 # are never accidentally expanded into filename lists.
 set -f
+# Hook stdout can be fed into Claude's context, so hook mode must never print.
+HOOK=""
+[[ "${1:-}" == "--hook" ]] && HOOK="${2:-}"
 input=$(cat)
-[ -z "$input" ] && {
+[[ -z "$input" && -z "$HOOK" ]] && {
   echo "Claude"
   exit 0
 }
-command -v jq >/dev/null || {
+[[ -n "$HOOK" ]] || command -v jq >/dev/null || {
   echo "Claude [needs jq]"
   exit 0
 }
@@ -107,15 +111,34 @@ done
 # Returns true (exit 0) when file is missing or older than $2 seconds.
 _stale() { [ ! -f "$1" ] || [ $((NOW - $(stat -f%m "$1" 2>/dev/null || stat -c%Y "$1" 2>/dev/null || echo 0))) -gt "$2" ]; }
 
+# ── Hook mode: per-session busy flag for the working shimmer ──
+# busy: UserPromptSubmit / PreToolUse. idle: Stop / StopFailure / SessionStart /
+# SessionEnd. Esc fires no hook; the statusline catches that from the transcript.
+# Subagent events carry agent_id and are ignored so background agents finishing
+# after the main turn can't flip the flag. Pure builtins + rm, no jq needed.
+if [[ -n "$HOOK" ]]; then
+  [[ "$CACHE_OK" == "1" ]] || exit 0
+  [[ "$input" =~ \"agent_id\"[[:space:]]*: ]] && exit 0
+  [[ "$input" =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9_-]+)\" ]] || exit 0
+  _BF="${_CD}/claude-busy-${BASH_REMATCH[1]}"
+  case "$HOOK" in
+  busy) _write_cache_record "$_BF" "$NOW" ;;
+  idle) rm -f "$_BF" 2>/dev/null ;;
+  esac
+  exit 0
+fi
+
 # ── Parse stdin + settings in one jq call ──
-# Fields: MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN
+# Fields: MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN SID TP
 # Read settings into a shell var rather than process substitution so the jq
 # --argjson path works on Windows Git Bash (where /proc/<pid>/fd/N used by
 # <(...) is unavailable and --slurpfile silently fails, yielding empty fields).
+# Every field needs a non-empty default: tab is IFS whitespace, so an empty
+# field would collapse and shift the rest.
 HAS_RL=0
 _SETTINGS=$(cat "$HOME/.claude/settings.json" 2>/dev/null)
 echo "$_SETTINGS" | jq -e . >/dev/null 2>&1 || _SETTINGS='{}'
-IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
+IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN SID TP < <(
   jq -r --argjson cfg "$_SETTINGS" \
     '[(.model.display_name//"?"),(.workspace.project_dir//"."|gsub("\\\\";"/")),
     (.context_window.used_percentage//0|floor),(.context_window.context_window_size//0),
@@ -126,7 +149,8 @@ IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
     (.rate_limits.seven_day.used_percentage//null|if type=="number" then floor else "--" end),
     (.rate_limits.five_hour.resets_at//0),
     (.rate_limits.seven_day.resets_at//0),
-    (if (.context_window.total_input_tokens|type)=="number" then (.context_window.total_input_tokens|floor) else -1 end)]|@tsv' <<<"$input"
+    (if (.context_window.total_input_tokens|type)=="number" then (.context_window.total_input_tokens|floor) else -1 end),
+    (.session_id//"-"),(.transcript_path//"-"|gsub("\\\\";"/"))]|@tsv' <<<"$input"
 )
 case "${EFF:-default}" in low) EF='low' ;; high) EF='high' ;; xhigh) EF='xhigh' ;; max) EF='max' ;; *) EF='medium' ;; esac
 
@@ -223,6 +247,46 @@ elif [[ "$IS_WT" == "1" ]]; then
   ((${#L1R} > 25)) && L1R="${L1R:0:25}…"
 fi
 
+# ── Org Label (10s disposable cache) ──
+# Names the org/plan of the logged-in account so hopping between Team and
+# Enterprise logins stays visible. Team/Enterprise show the org name, minus an
+# optional shared prefix in CLAUDE_PACE_ORG_STRIP (unset by default), falling
+# back to the plan type when nothing is left. Personal plans show the plan
+# type, since their org name is "<email>'s Organization". API-key logins have
+# no oauthAccount and show nothing.
+ORG=""
+_ACCT="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+_org_label() {
+  jq -r --arg strip "${CLAUDE_PACE_ORG_STRIP:-}" '
+    .oauthAccount // empty | (.organizationType // "") as $t
+    | ({claude_team: "Team", claude_enterprise: "Enterprise", claude_max: "Max",
+        claude_pro: "Pro", claude_free: "Free"}[$t] // "") as $plan
+    | if ($t | test("^claude_(max|pro|free)$")) then $plan
+      else (.organizationName // "" | gsub("[[:cntrl:]]"; "")
+          | if $strip != "" and (. == $strip or startswith($strip + " "))
+            then .[($strip | length):] else . end
+          | sub("^[\\s\\-–—·|:]+"; "") | sub("\\s+$"; "")) as $name
+        | if $name != "" then $name else $plan end
+      end' "$_ACCT" 2>/dev/null
+}
+if [ -f "$_ACCT" ]; then
+  if [[ "$CACHE_OK" == "1" ]]; then
+    OC="${_CD}/claude-sl-org-${_ACCT//[^A-Za-z0-9]/_}"
+    if _stale "$OC" 10; then
+      ORG=$(_org_label)
+      _write_cache_record "$OC" "$ORG"
+    elif _load_cache_record_file "$OC"; then
+      ORG=${CACHE_FIELDS[0]:-}
+    fi
+  else
+    ORG=$(_org_label)
+  fi
+  # Org names are admin-controlled; never let control bytes reach the terminal.
+  ORG=${ORG//[[:cntrl:]]/}
+  ((${#ORG} > 24)) && ORG="${ORG:0:24}…"
+fi
+[ -n "$ORG" ] && L1R+=" ${D}·${N} ${C}${ORG}${N}"
+
 # Usage data: read stdin rate_limits when available. When absent we show
 # placeholders and the session cost instead of falling back to a possibly stale
 # (or wrong-account) cached snapshot. See docs/decisions/2026-05-20-quota-cache-removal.md.
@@ -237,19 +301,69 @@ else
   SHOW_COST=1
 fi
 
-# Combined usage formatter: used% [pace delta] (countdown)
+# ── Working State (drives the shimmer) ──
+# Hooks keep a per-session flag while Claude works (see Hook mode above). Esc
+# fires no hook, so a flagged session still counts as idle when the newest
+# conversation entry in the transcript tail is the interrupt notice.
+BUSY=0
+if [[ "$CACHE_OK" == "1" && "$SID" =~ ^[A-Za-z0-9_-]+$ && -f "${_CD}/claude-busy-${SID}" ]]; then
+  BUSY=1
+  if [ -f "$TP" ]; then
+    # Last of (entry type | interrupt notice) in file order. The notice sits after
+    # its own entry's "type":"user", so it only wins if nothing followed it.
+    # grep, not ${var##*pat}: bash 3.2 takes ~180ms on that over 16KB.
+    _LAST=$(tail -c 16384 "$TP" 2>/dev/null |
+      grep -oE '"type":"(user|assistant)"|"text":"\[Request interrupted by user' 2>/dev/null | tail -n 1)
+    [[ "$_LAST" == '"text":"[Request interrupted by user' ]] && BUSY=0
+  fi
+fi
+
+# Pace bar: fill = used%, ┃ = where usage would sit at an even pace through the
+# window. Fill is red when ahead of the mark, green when at or behind it (or by
+# absolute usage when there's no reset time). While busy, one cell glints and
+# sweeps along the fill one cell per second, or along the whole bar when the
+# fill is under 2 cells so there's still something to see.
+_pace_bar() {
+  local u="$1" rm="$2" w="$3" f m=-1 e col s=-1 i st g cur="" out=""
+  f=$((u / 10))
+  ((f > 10)) && f=10
+  if [[ "$rm" =~ ^[0-9]+$ ]] && ((rm <= w)); then
+    e=$(((w - rm) * 100 / w))
+    m=$((e / 10))
+    ((m > 9)) && m=9
+    if ((u > e)); then col=$R; else col=$G; fi
+  elif ((u >= 90)); then col=$R; elif ((u >= 70)); then col=$Y; else col=$G; fi
+  if ((BUSY)); then
+    if ((f >= 2)); then s=$((NOW % f)); else s=$((NOW % 10)); fi
+  fi
+  for ((i = 0; i < 10; i++)); do
+    if ((i == m)); then
+      st="" g='┃'
+    elif ((i < f)); then
+      st=$col g='█'
+      ((i == s)) && g='▓'
+    else
+      st=$D g='░'
+      ((i == s)) && g='▒'
+    fi
+    # Emit a style change only between runs; reset first since dim persists.
+    if [[ "$st" != "$cur" || -z "$out" ]]; then
+      out+="${N}${st}"
+      cur=$st
+    fi
+    out+=$g
+  done
+  printf '%s%s' "$out" "$N"
+}
+
+# Combined usage formatter: pace-bar used% (countdown)
 _usage() {
   local u="${1:---}" rm="$2" w="$3"
   if [[ ! "$u" =~ ^[0-9]+$ ]]; then
     printf "%s" "$u"
   else
-    if ((u >= 90)); then printf "${R}%d%%${N}" "$u"; elif ((u >= 70)); then printf "${Y}%d%%${N}" "$u"; else printf "${G}%d%%${N}" "$u"; fi
-    if [[ "$rm" =~ ^[0-9]+$ ]] && ((rm <= w)); then
-      # Pace delta: positive = over pace (overspend), negative = under pace (surplus).
-      local d=$((u - (w - rm) * 100 / w))
-      ((d > 0)) && printf " ${R}⇡%d%%${N}" "$d"
-      ((d < 0)) && printf " ${G}⇣%d%%${N}" "${d#-}"
-    fi
+    _pace_bar "$u" "$rm" "$w"
+    if ((u >= 90)); then printf " ${R}%d%%${N}" "$u"; elif ((u >= 70)); then printf " ${Y}%d%%${N}" "$u"; else printf " ${G}%d%%${N}" "$u"; fi
   fi
   [[ "$rm" =~ ^[0-9]+$ ]] || return
   ((rm >= 1440)) && {

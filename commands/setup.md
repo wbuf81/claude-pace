@@ -39,11 +39,15 @@ Read `~/.claude/settings.json` with the Read tool. Then use the Edit tool to add
 ```json
 "statusLine": {
   "type": "command",
-  "command": "~/.claude/statusline.sh"
+  "command": "~/.claude/statusline.sh",
+  "refreshInterval": 1
 }
 ```
 
-If `statusLine` already exists, update the `command` value. If it does not exist, add it as a top-level key.
+If `statusLine` already exists, update the `command` and `refreshInterval` values. If it does not exist, add it as a top-level key.
+
+`refreshInterval: 1` re-runs the statusline every second so the working shimmer
+on the usage bars animates; without it the bars only redraw on new messages.
 
 ## Step 4: Confirm
 
@@ -52,5 +56,5 @@ Tell the user:
 - claude-pace has been installed (or updated) successfully.
 - Restart Claude Code (or start a new session) to see the statusline.
 - To update later, pull the new plugin version first, then re-run this command:
-  `/plugin marketplace update claude-pace-marketplace` → `/plugin update claude-pace` → `/reload-plugins` → `/claude-pace:setup`
+  `/plugin marketplace update claude-pace-fork` → `/plugin update claude-pace` → `/reload-plugins` → `/claude-pace:setup`
 - To remove: delete the `statusLine` block from `~/.claude/settings.json`.

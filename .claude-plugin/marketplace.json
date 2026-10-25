@@ -1,21 +1,16 @@
 {
-  "name": "claude-pace-marketplace",
+  "name": "claude-pace-fork",
   "owner": {
-    "name": "yuhan",
-    "email": "lei.yuhan@outlook.com"
+    "name": "wbuf81"
   },
   "metadata": {
-    "description": "Claude Pace statusline plugin marketplace",
-    "version": "0.9.5"
+    "description": "claude-pace fork: org label, pace bars, working shimmer",
+    "version": "0.9.5-fork.1"
   },
   "plugins": [
     {
       "name": "claude-pace",
-      "source": {
-        "source": "github",
-        "repo": "Astro-Han/claude-pace",
-        "ref": "v0.9.5"
-      },
+      "source": "./",
       "description": "Lightweight statusline with quota pace tracking. Pure Bash + jq.",
       "category": "monitoring",
       "tags": [
