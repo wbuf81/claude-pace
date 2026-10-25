@@ -6,8 +6,8 @@ Fork of upstream v0.9.5 ([wbuf81/claude-pace](https://github.com/wbuf81/claude-p
 
 - Show the logged-in org at the end of the top line (`· Acme`), read from `$CLAUDE_CONFIG_DIR/.claude.json` (default `~/.claude.json`) with a 10s cache. Team/Enterprise show the org name, minus an optional shared prefix set in `CLAUDE_PACE_ORG_STRIP`, falling back to the plan type; personal plans show `Pro`/`Max`; API-key logins show nothing. Control bytes are stripped since org names are admin-controlled text
 - Replace the `⇡`/`⇣` pace arrows with 10-cell pace bars for 5h and 7d: fill = used, `┃` = even-pace mark, red fill when ahead of the mark, green when at or behind it
-- Add a working shimmer: while Claude works, a glint sweeps the bars one cell per second. New `--hook busy|idle` mode keeps a per-session flag in the private cache dir, wired up in `hooks/hooks.json` (busy on UserPromptSubmit/PreToolUse, idle on Stop/StopFailure/SessionStart/SessionEnd, subagent events ignored). Esc fires no hook, so the statusline also treats a session as idle when the newest conversation entry in the transcript tail is the interrupt notice. Hook mode never prints, since hook stdout can reach Claude's context
-- `/claude-pace:setup` now sets `"refreshInterval": 1` so the shimmer animates
+- Add a working ripple: while Claude works, a shallow dip in height (`█▇▆▅▆▇`) rolls along the bar fills one cell per second, falling back to a `▒` glint on the track when a bar has no fill to ripple. New `--hook busy|idle` mode keeps a per-session flag in the private cache dir, wired up in `hooks/hooks.json` (busy on UserPromptSubmit/PreToolUse, idle on Stop/StopFailure/SessionStart/SessionEnd, subagent events ignored). Esc fires no hook, so the statusline also treats a session as idle when the newest conversation entry in the transcript tail is the interrupt notice. Hook mode never prints, since hook stdout can reach Claude's context
+- `/claude-pace:setup` now sets `"refreshInterval": 1` so the ripple animates
 - Marketplace renamed to `claude-pace-fork` and serves the plugin from the repo itself (`"source": "./"`)
 
 ## 0.9.5

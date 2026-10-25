@@ -46,7 +46,7 @@ Read `~/.claude/settings.json` with the Read tool. Then use the Edit tool to add
 
 If `statusLine` already exists, update the `command` and `refreshInterval` values. If it does not exist, add it as a top-level key.
 
-`refreshInterval: 1` re-runs the statusline every second so the working shimmer
+`refreshInterval: 1` re-runs the statusline every second so the working ripple
 on the usage bars animates; without it the bars only redraw on new messages.
 
 ## Step 4: Confirm

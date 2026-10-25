@@ -12,12 +12,12 @@ If you are searching for a Claude Code statusline, a Claude Code quota monitor, 
 
 ```
 Opus 5.5 (1M) xhigh |  claudepace (main) · Acme
-██░░░░░░░░ 23% 1M   |  5h ██▓█┃░░░░░ 41% 3h  7d █░░░┃░▒░░░ 18% 4d
+██░░░░░░░░ 23% 1M   |  5h ▆▅▆▇┃░░░░░ 41% 3h  7d ▆░░░┃░░░░░ 18% 4d
 ```
 
 - **Org label.** The top line ends with the org you're logged into, read from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`). Team and Enterprise logins show the org name, minus an optional shared prefix set in `CLAUDE_PACE_ORG_STRIP` (e.g. `Acme Corp` turns "Acme Corp Platform" into `Platform`), falling back to `Team`/`Enterprise` when nothing is left. Personal plans show `Pro`/`Max`. API-key logins show nothing.
 - **Pace bars.** 5h and 7d usage are 10-cell bars. The fill is what you've used; `┃` marks where you'd be at an even pace through the window. Red fill means you're ahead of the mark (burning too fast), green means at or behind it. These replace the `⇡`/`⇣` arrows.
-- **Working shimmer.** While Claude is working, a glint (`▓` on the fill, `▒` on the empty track) sweeps along the bars one cell per second. Plugin hooks (`hooks/hooks.json`) keep a per-session busy flag; Esc fires no hook, so the statusline also checks the transcript for the interrupt notice. Needs the plugin install (for the hooks) and `"refreshInterval": 1` on `statusLine`, which `/claude-pace:setup` adds.
+- **Working ripple.** While Claude is working, a shallow dip in height (`█▇▆▅▆▇`) rolls along the fill of each bar, one cell per second. A bar with nothing to ripple (empty fill) gets a `▒` glint sweeping its track instead. Plugin hooks (`hooks/hooks.json`) keep a per-session busy flag; Esc fires no hook, so the statusline also checks the transcript for the interrupt notice. Needs the plugin install (for the hooks) and `"refreshInterval": 1` on `statusLine`, which `/claude-pace:setup` adds.
 
 ## TL;DR
 

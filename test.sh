@@ -663,16 +663,17 @@ else
   echo "    actual: $(printf '%q' "$RAW")"
 fi
 
-# ── Test 33: Shimmer while Claude is working ──
-# A frozen clock makes the shimmer cell deterministic: it sweeps the filled
-# cells (NOW % fill) or, under 2 filled cells, the whole bar (NOW % 10).
-echo "Test 33: working shimmer"
+# ── Test 33: Ripple while Claude is working ──
+# A frozen clock makes the ripple deterministic: fill cell i shows height
+# (i - NOW) mod 6 of █▇▆▅▆▇. With no fill cell free to ripple, a glint sweeps
+# the empty track at NOW % 10.
+echo "Test 33: working ripple"
 FIXED_NOW=2000000002
 CLOCK_BIN="$TEST_TMP/fixed-clock-bin"
 mkdir -p "$CLOCK_BIN"
 cat >"$CLOCK_BIN/date" <<STUB
 #!/bin/sh
-[ "\$1" = "+%s" ] && { echo $FIXED_NOW; exit 0; }
+[ "\$1" = "+%s" ] && { echo \${FAKE_NOW:-$FIXED_NOW}; exit 0; }
 exec /bin/date "\$@"
 STUB
 chmod +x "$CLOCK_BIN/date"
@@ -682,31 +683,38 @@ SHIM_FLAG="$SHIM_RUNTIME/claude-pace/claude-busy-sess-1"
 SHIM_TRANSCRIPT="$TEST_TMP/shim-transcript.jsonl"
 mkdir -p "$SHIM_HOME" "$SHIM_RUNTIME/claude-pace"
 chmod 700 "$SHIM_RUNTIME/claude-pace"
-# 5h: used 41 → 4 filled, marker at 4 → shimmer at NOW%4=2.
-# 7d: used 18 → 1 filled (<2) → shimmer sweeps whole bar at NOW%10=2 (a track cell).
+# NOW % 6 = 4, so cells 0-3 take phases 2 3 4 5 → ▆▅▆▇.
+# 5h: used 41 → 4 filled, marker at 4 → ▆▅▆▇┃.
+# 7d: used 18 → 1 filled, marker at 4 → that one cell ripples (▆).
 SHIM_INPUT='{"session_id":"sess-1","transcript_path":"'"$SHIM_TRANSCRIPT"'","model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"/tmp/my-app"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":41,"resets_at":'"$((FIXED_NOW + 10830))"'},"seven_day":{"used_percentage":18,"resets_at":'"$((FIXED_NOW + 345630))"'}}}'
 run_fixed_clock() {
-  env HOME="$SHIM_HOME" XDG_RUNTIME_DIR="$SHIM_RUNTIME" USER=tester PATH="$CLOCK_BIN:$PATH" \
+  env HOME="$SHIM_HOME" XDG_RUNTIME_DIR="$SHIM_RUNTIME" USER=tester PATH="$CLOCK_BIN:$PATH" FAKE_NOW="${2:-}" \
     bash claude-pace.sh 2>/dev/null <<<"$1" | strip_ansi
 }
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"build it"}}' >"$SHIM_TRANSCRIPT"
 rm -f "$SHIM_FLAG"
 OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
-assert_line "idle session has no shimmer" 2 '5h ████┃░░░░░ 41%.*7d █░░░┃░░░░░ 18%'
+assert_line "idle session has no ripple" 2 '5h ████┃░░░░░ 41%.*7d █░░░┃░░░░░ 18%'
 printf '%s\n' "$FIXED_NOW" >"$SHIM_FLAG"
 OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
-assert_line "busy shimmer glints inside the fill" 2 '5h ██▓█┃░░░░░ 41%'
-assert_line "busy shimmer sweeps whole bar when fill is tiny" 2 '7d █░▒░┃░░░░░ 18%'
+assert_line "busy fill ripples" 2 '5h ▆▅▆▇┃░░░░░ 41%'
+assert_line "a one-cell fill still ripples" 2 '7d ▆░░░┃░░░░░ 18%'
+OUTPUT=$(run_fixed_clock "$SHIM_INPUT" $((FIXED_NOW + 1)))
+assert_line "ripple rolls right one cell per second" 2 '5h ▇▆▅▆┃░░░░░ 41%'
+# 7d used 5 → empty fill: the glint sweeps the track at NOW%10=2 instead.
+U18='"used_percentage":18' U5='"used_percentage":5'
+OUTPUT=$(run_fixed_clock "${SHIM_INPUT/$U18/$U5}")
+assert_line "empty fill falls back to a track glint" 2 '7d ░░▒░┃░░░░░ 5%'
 # Esc fires no hook, so the transcript is the only interrupt signal.
 printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}' '{"type":"queue-operation","operation":"enqueue"}' >>"$SHIM_TRANSCRIPT"
 OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
-assert_line "interrupt in transcript stops the shimmer" 2 '5h ████┃░░░░░ 41%'
+assert_line "interrupt in transcript stops the ripple" 2 '5h ████┃░░░░░ 41%'
 printf '%s\n' '{"type":"user","message":{"role":"user","content":"try again"}}' >>"$SHIM_TRANSCRIPT"
 OUTPUT=$(run_fixed_clock "$SHIM_INPUT")
-assert_line "new prompt after interrupt resumes the shimmer" 2 '5h ██▓█┃░░░░░ 41%'
+assert_line "new prompt after interrupt resumes the ripple" 2 '5h ▆▅▆▇┃░░░░░ 41%'
 OUTPUT=$(run_fixed_clock "${SHIM_INPUT/sess-1/sess-2}")
 assert_line "busy flag is per session" 2 '5h ████┃░░░░░ 41%'
-assert_aligned "| aligned while shimmering"
+assert_aligned "| aligned while rippling"
 
 # ── Test 34: Hook mode maintains the busy flag ──
 echo "Test 34: hook mode"

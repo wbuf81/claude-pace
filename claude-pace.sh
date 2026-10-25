@@ -2,7 +2,7 @@
 # Claude Code statusline plugin
 # Line1: model (ctx) effort | project (branch) Nf +A -D · org
 # Line2: bar PCT% CL | 5h pace-bar used% countdown  7d pace-bar used% countdown
-# Hook mode: claude-pace.sh --hook busy|idle (plugin hooks; drives the shimmer)
+# Hook mode: claude-pace.sh --hook busy|idle (plugin hooks; drives the ripple)
 
 # Disable glob expansion so unquoted vars with wildcards (e.g. DIR paths)
 # are never accidentally expanded into filename lists.
@@ -111,7 +111,7 @@ done
 # Returns true (exit 0) when file is missing or older than $2 seconds.
 _stale() { [ ! -f "$1" ] || [ $((NOW - $(stat -f%m "$1" 2>/dev/null || stat -c%Y "$1" 2>/dev/null || echo 0))) -gt "$2" ]; }
 
-# ── Hook mode: per-session busy flag for the working shimmer ──
+# ── Hook mode: per-session busy flag for the working ripple ──
 # busy: UserPromptSubmit / PreToolUse. idle: Stop / StopFailure / SessionStart /
 # SessionEnd. Esc fires no hook; the statusline catches that from the transcript.
 # Subagent events carry agent_id and are ignored so background agents finishing
@@ -301,7 +301,7 @@ else
   SHOW_COST=1
 fi
 
-# ── Working State (drives the shimmer) ──
+# ── Working State (drives the ripple) ──
 # Hooks keep a per-session flag while Claude works (see Hook mode above). Esc
 # fires no hook, so a flagged session still counts as idle when the newest
 # conversation entry in the transcript tail is the interrupt notice.
@@ -320,11 +320,13 @@ fi
 
 # Pace bar: fill = used%, ┃ = where usage would sit at an even pace through the
 # window. Fill is red when ahead of the mark, green when at or behind it (or by
-# absolute usage when there's no reset time). While busy, one cell glints and
-# sweeps along the fill one cell per second, or along the whole bar when the
-# fill is under 2 cells so there's still something to see.
+# absolute usage when there's no reset time). While busy, the fill ripples: a
+# shallow dip in cell height rolls rightward along it one cell per second. When
+# no fill cell is free to ripple (empty fill, or its one cell holds the mark), a
+# glint sweeps the empty track instead so there's still something to see.
+_RIPPLE=('█' '▇' '▆' '▅' '▆' '▇')
 _pace_bar() {
-  local u="$1" rm="$2" w="$3" f m=-1 e col s=-1 i st g cur="" out=""
+  local u="$1" rm="$2" w="$3" f m=-1 e col rip=0 s=-1 i st g cur="" out=""
   f=$((u / 10))
   ((f > 10)) && f=10
   if [[ "$rm" =~ ^[0-9]+$ ]] && ((rm <= w)); then
@@ -334,14 +336,14 @@ _pace_bar() {
     if ((u > e)); then col=$R; else col=$G; fi
   elif ((u >= 90)); then col=$R; elif ((u >= 70)); then col=$Y; else col=$G; fi
   if ((BUSY)); then
-    if ((f >= 2)); then s=$((NOW % f)); else s=$((NOW % 10)); fi
+    if ((f > 1 || (f == 1 && m != 0))); then rip=1; else s=$((NOW % 10)); fi
   fi
   for ((i = 0; i < 10; i++)); do
     if ((i == m)); then
       st="" g='┃'
     elif ((i < f)); then
       st=$col g='█'
-      ((i == s)) && g='▓'
+      ((rip)) && g=${_RIPPLE[((i - NOW) % 6 + 6) % 6]}
     else
       st=$D g='░'
       ((i == s)) && g='▒'
